@@ -5,35 +5,38 @@ import com.example.springsaas.authentication.repository.UserRepository;
 import com.example.springsaas.subscriptionmanagement.dto.SubscriptionRequest;
 import com.example.springsaas.subscriptionmanagement.dto.SubscriptionResponse;
 import com.example.springsaas.subscriptionmanagement.entity.Subscription;
+import com.example.springsaas.subscriptionmanagement.entity.SubscriptionAudit;
 import com.example.springsaas.subscriptionmanagement.entity.Subscription.SubscriptionStatus;
+import com.example.springsaas.subscriptionmanagement.repository.SubscriptionAuditRepository;
 import com.example.springsaas.subscriptionmanagement.repository.SubscriptionRepository;
 import com.stripe.Stripe;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Customer;
-import com.stripe.model.PaymentMethod;
 import com.stripe.model.Price;
-import com.stripe.model.SetupIntent;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.time.Instant;
+import java.math.BigDecimal; 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SubscriptionService {
 
     private final SubscriptionRepository subscriptionRepository;
+    private final SubscriptionAuditRepository auditRepository;
     private final UserRepository userRepository;
 
     @Value("${stripe.api.key}")
@@ -51,15 +54,93 @@ public class SubscriptionService {
     }
 
     @Transactional
-    public SubscriptionResponse createSubscription(SubscriptionRequest request) throws StripeException {
+    public Map<String, String> createCheckoutSession(SubscriptionRequest request) throws StripeException {
         User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        log.info("Creating checkout session for user: {} with plan: {}", user.getEmail(), request.getPlan());
 
-        // Check if user already has an active subscription
-        if (subscriptionRepository.existsByUserAndStatus(user, SubscriptionStatus.ACTIVE)) {
-            throw new RuntimeException("User already has an active subscription");
+        try {
+            // Validate request
+            validateSubscriptionRequest(user, request);
+
+            // Create or get Stripe customer
+            String stripeCustomerId = getOrCreateStripeCustomer(user);
+
+            // Get price details for the subscription
+            Price price = Price.retrieve(PLAN_PRICE_IDS.get(request.getPlan()));
+
+            // Create Checkout Session
+            Map<String, Object> params = new HashMap<>();
+            params.put("customer", stripeCustomerId);
+            params.put("line_items", List.of(Map.of("price", PLAN_PRICE_IDS.get(request.getPlan()), "quantity", 1)));
+            params.put("mode", "subscription");
+            params.put("success_url", "http://localhost:4200/dashboard/subscription/success?session_id={CHECKOUT_SESSION_ID}");
+            params.put("cancel_url", "http://localhost:4200/dashboard/subscription/cancel");
+
+            com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
+            log.info("Checkout session created successfully for user: {} with sessionId: {}", user.getEmail(), session.getId());
+
+            // Create initial subscription record (PENDING status)
+            Subscription subscription = new Subscription();
+            subscription.setUser(user);
+            subscription.setPlan(request.getPlan());
+            subscription.setStatus(SubscriptionStatus.PENDING);
+            subscription.setAmount(BigDecimal.valueOf(price.getUnitAmount() / 100.0));
+            subscription.setCurrency(price.getCurrency().toUpperCase());
+            subscription.setStripeCustomerId(stripeCustomerId);
+            
+            // Set initial period dates
+            LocalDateTime now = LocalDateTime.now();
+            subscription.setCurrentPeriodStart(now);
+            subscription.setCurrentPeriodEnd(now.plusMonths(1));
+            
+            // Save the subscription first to ensure it exists
+            Subscription savedSubscription = subscriptionRepository.save(subscription);
+            log.info("Created initial subscription record with id: {} for user: {}", savedSubscription.getId(), user.getEmail());
+
+            // Create audit record
+            createAuditRecord(user, request.getPlan(), session.getId(), "CHECKOUT_CREATED", null);
+
+            return Map.of(
+                "sessionId", session.getId(),
+                "sessionUrl", session.getUrl()
+            );
+        } catch (Exception e) {
+            String errorMessage = e.getMessage();
+            log.error("Failed to create checkout session for user: {} with plan: {}", user.getEmail(), request.getPlan(), e);
+            
+            // Create audit record for failure
+            createAuditRecord(user, request.getPlan(), null, "CHECKOUT_FAILED", errorMessage);
+            
+            throw e;
+        }
+    }
+
+    public List<SubscriptionResponse> getUserSubscriptions() {
+        User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        return subscriptionRepository.findAllByUser(user)
+                .stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+    }
+
+    private void validateSubscriptionRequest(User user, SubscriptionRequest request) {
+        if (!PLAN_PRICE_IDS.containsKey(request.getPlan())) {
+            log.error("Invalid subscription plan requested: {}", request.getPlan());
+            throw new IllegalArgumentException("Invalid subscription plan");
         }
 
-        // Create or get Stripe customer
+        if (subscriptionRepository.existsByUserAndStatus(user, SubscriptionStatus.ACTIVE)) {
+            log.error("User {} already has an active subscription", user.getEmail());
+            throw new IllegalStateException("User already has an active subscription");
+        }
+
+        if (!user.isEnabled()) {
+            log.error("User {} is not enabled", user.getEmail());
+            throw new IllegalStateException("User account is not enabled");
+        }
+    }
+
+    private String getOrCreateStripeCustomer(User user) throws StripeException {
         String stripeCustomerId = user.getStripeCustomerId();
         if (stripeCustomerId == null) {
             Map<String, Object> customerParams = new HashMap<>();
@@ -69,98 +150,19 @@ public class SubscriptionService {
             stripeCustomerId = customer.getId();
             user.setStripeCustomerId(stripeCustomerId);
             userRepository.save(user);
+            log.info("Created new Stripe customer for user: {}", user.getEmail());
         }
-
-        // Attach payment method to customer if provided
-        if (request.getPaymentMethodId() != null) {
-            PaymentMethod paymentMethod = PaymentMethod.retrieve(request.getPaymentMethodId());
-            paymentMethod.attach(Map.of("customer", stripeCustomerId));
-            
-            // Set as default payment method
-            Customer customer = Customer.retrieve(stripeCustomerId);
-            customer.update(Map.of("invoice_settings", 
-                Map.of("default_payment_method", request.getPaymentMethodId())));
-        }
-
-        // Create Stripe subscription
-        Map<String, Object> item = new HashMap<>();
-        item.put("price", PLAN_PRICE_IDS.get(request.getPlan()));
-
-        Map<String, Object> items = new HashMap<>();
-        items.put("0", item);
-
-        Map<String, Object> params = new HashMap<>();
-        params.put("customer", stripeCustomerId);
-        params.put("items", items);
-        params.put("payment_behavior", "default_incomplete");
-        params.put("payment_settings", Map.of(
-            "payment_method_types", List.of("card"),
-            "save_default_payment_method", "on_subscription"
-        ));
-        if (request.getPaymentMethodId() != null) {
-            params.put("default_payment_method", request.getPaymentMethodId());
-        }
-
-        com.stripe.model.Subscription stripeSubscription = com.stripe.model.Subscription.create(params);
-
-        // Get price details
-        Price price = Price.retrieve(PLAN_PRICE_IDS.get(request.getPlan()));
-
-        // Create local subscription
-        Subscription subscription = new Subscription();
-        subscription.setUser(user);
-        subscription.setPlan(request.getPlan());
-        subscription.setStatus(SubscriptionStatus.ACTIVE);
-        subscription.setAmount(BigDecimal.valueOf(price.getUnitAmount() / 100.0));
-        subscription.setCurrency(price.getCurrency().toUpperCase());
-        subscription.setStripeSubscriptionId(stripeSubscription.getId());
-        subscription.setStripeCustomerId(stripeCustomerId);
-        subscription.setCurrentPeriodStart(LocalDateTime.ofInstant(
-                Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodStart()),
-                ZoneId.systemDefault()
-        ));
-        subscription.setCurrentPeriodEnd(LocalDateTime.ofInstant(
-                Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodEnd()),
-                ZoneId.systemDefault()
-        ));
-
-        Subscription savedSubscription = subscriptionRepository.save(subscription);
-        return mapToResponse(savedSubscription);
+        return stripeCustomerId;
     }
 
-    @Transactional
-    public SubscriptionResponse cancelSubscription(Long subscriptionId) throws StripeException {
-        User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
-        Subscription subscription = subscriptionRepository.findById(subscriptionId)
-                .orElseThrow(() -> new RuntimeException("Subscription not found"));
-
-        if (!subscription.getUser().getId().equals(user.getId())) {
-            throw new RuntimeException("Not authorized to cancel this subscription");
-        }
-
-        if (subscription.getStatus() != SubscriptionStatus.ACTIVE) {
-            throw new RuntimeException("Subscription is not active");
-        }
-
-        // Cancel Stripe subscription
-        com.stripe.model.Subscription stripeSubscription = 
-                com.stripe.model.Subscription.retrieve(subscription.getStripeSubscriptionId());
-        stripeSubscription.cancel();
-
-        // Update local subscription
-        subscription.setStatus(SubscriptionStatus.CANCELED);
-        subscription.setCanceledAt(LocalDateTime.now());
-        
-        Subscription savedSubscription = subscriptionRepository.save(subscription);
-        return mapToResponse(savedSubscription);
-    }
-
-    public List<SubscriptionResponse> getUserSubscriptions() {
-        User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
-        return subscriptionRepository.findAllByUser(user)
-                .stream()
-                .map(this::mapToResponse)
-                .collect(Collectors.toList());
+    private void createAuditRecord(User user, Subscription.SubscriptionPlan plan, String sessionId, String status, String errorMessage) {
+        SubscriptionAudit audit = new SubscriptionAudit();
+        audit.setUser(user);
+        audit.setPlan(plan);
+        audit.setStripeSessionId(sessionId);
+        audit.setStatus(status);
+        audit.setErrorMessage(errorMessage);
+        auditRepository.save(audit);
     }
 
     private SubscriptionResponse mapToResponse(Subscription subscription) {
@@ -179,63 +181,77 @@ public class SubscriptionService {
                 .build();
     }
 
-    // Add new method for creating setup intent
-    public Map<String, String> createSetupIntent() throws StripeException {
-        User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+    @Transactional
+    public void handleCheckoutSessionCompleted(com.stripe.model.checkout.Session session) {
+        String stripeCustomerId = session.getCustomer();
+        String stripeSubscriptionId = session.getSubscription();
         
-        // Create or get Stripe customer
-        String stripeCustomerId = user.getStripeCustomerId();
-        if (stripeCustomerId == null) {
-            Map<String, Object> customerParams = new HashMap<>();
-            customerParams.put("email", user.getEmail());
-            customerParams.put("name", user.getFirstName() + " " + user.getLastName());
-            Customer customer = Customer.create(customerParams);
-            stripeCustomerId = customer.getId();
-            user.setStripeCustomerId(stripeCustomerId);
-            userRepository.save(user);
+        User user = userRepository.findByStripeCustomerId(stripeCustomerId)
+                .orElseThrow(() -> new RuntimeException("User not found for customer: " + stripeCustomerId));
+        
+        Subscription subscription = subscriptionRepository.findByUserAndStatus(user, SubscriptionStatus.PENDING)
+                .orElseThrow(() -> new RuntimeException("No pending subscription found for user: " + user.getEmail()));
+        
+        try {
+            com.stripe.model.Subscription stripeSubscription = com.stripe.model.Subscription.retrieve(stripeSubscriptionId);
+            
+            subscription.setStatus(SubscriptionStatus.ACTIVE);
+            subscription.setStripeSubscriptionId(stripeSubscriptionId);
+            subscription.setCurrentPeriodStart(LocalDateTime.ofInstant(
+                    Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodStart()), 
+                    ZoneId.systemDefault()));
+            subscription.setCurrentPeriodEnd(LocalDateTime.ofInstant(
+                    Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodEnd()), 
+                    ZoneId.systemDefault()));
+            
+            subscriptionRepository.save(subscription);
+            
+            // Create audit record for successful subscription
+            createAuditRecord(user, subscription.getPlan(), session.getId(), "SUBSCRIPTION_ACTIVATED", null);
+            
+            log.info("Subscription activated for user: {} with stripeSubscriptionId: {}", 
+                    user.getEmail(), stripeSubscriptionId);
+        } catch (StripeException e) {
+            log.error("Error retrieving Stripe subscription", e);
+            createAuditRecord(user, subscription.getPlan(), session.getId(), "ACTIVATION_FAILED", e.getMessage());
+            throw new RuntimeException("Error activating subscription", e);
         }
-
-        // Create Setup Intent
-        Map<String, Object> params = new HashMap<>();
-        params.put("customer", stripeCustomerId);
-        params.put("payment_method_types", List.of("card"));
-        SetupIntent setupIntent = SetupIntent.create(params);
-
-        return Map.of(
-            "clientSecret", setupIntent.getClientSecret(),
-            "customerId", stripeCustomerId
-        );
     }
 
     @Transactional
-    public Map<String, String> createCheckoutSession(SubscriptionRequest request) throws StripeException {
-        User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
-
-        // Create or get Stripe customer
-        String stripeCustomerId = user.getStripeCustomerId();
-        if (stripeCustomerId == null) {
-            Map<String, Object> customerParams = new HashMap<>();
-            customerParams.put("email", user.getEmail());
-            customerParams.put("name", user.getFirstName() + " " + user.getLastName());
-            Customer customer = Customer.create(customerParams);
-            stripeCustomerId = customer.getId();
-            user.setStripeCustomerId(stripeCustomerId);
-            userRepository.save(user);
+    public void handleSubscriptionUpdated(com.stripe.model.Subscription stripeSubscription) {
+        Subscription subscription = subscriptionRepository
+                .findByStripeSubscriptionId(stripeSubscription.getId())
+                .orElseThrow(() -> new RuntimeException("Subscription not found: " + stripeSubscription.getId()));
+        
+        subscription.setCurrentPeriodStart(LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodStart()), 
+                ZoneId.systemDefault()));
+        subscription.setCurrentPeriodEnd(LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodEnd()), 
+                ZoneId.systemDefault()));
+        
+        if ("past_due".equals(stripeSubscription.getStatus())) {
+            subscription.setStatus(SubscriptionStatus.PAST_DUE);
+        } else if ("unpaid".equals(stripeSubscription.getStatus())) {
+            subscription.setStatus(SubscriptionStatus.UNPAID);
         }
+        
+        subscriptionRepository.save(subscription);
+        log.info("Subscription updated: {}", subscription.getId());
+    }
 
-        // Create Checkout Session
-        Map<String, Object> params = new HashMap<>();
-        params.put("customer", stripeCustomerId);
-        params.put("line_items", List.of(Map.of("price", PLAN_PRICE_IDS.get(request.getPlan()), "quantity", 1)));
-        params.put("mode", "subscription");
-        params.put("success_url", "http://localhost:4200/dashboard/subscription/success?session_id={CHECKOUT_SESSION_ID}");
-        params.put("cancel_url", "http://localhost:4200/dashboard/subscription/cancel");
-
-        com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.create(params);
-
-        return Map.of(
-            "sessionId", session.getId(),
-            "sessionUrl", session.getUrl()
-        );
+    @Transactional
+    public void handleSubscriptionCanceled(com.stripe.model.Subscription stripeSubscription) {
+        Subscription subscription = subscriptionRepository
+                .findByStripeSubscriptionId(stripeSubscription.getId())
+                .orElseThrow(() -> new RuntimeException("Subscription not found: " + stripeSubscription.getId()));
+        
+        subscription.setStatus(SubscriptionStatus.CANCELED);
+        subscription.setCanceledAt(LocalDateTime.now());
+        subscription.setCancelReason("Canceled via Stripe");
+        
+        subscriptionRepository.save(subscription);
+        log.info("Subscription canceled: {}", subscription.getId());
     }
 } 
