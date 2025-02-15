@@ -27,7 +27,7 @@ public class Subscription extends BaseEntity {
 
     @Column(nullable = false)
     @Enumerated(EnumType.STRING)
-    private SubscriptionStatus status;
+    private SubscriptionStatus status = SubscriptionStatus.PENDING;
 
     @Column(nullable = false)
     private BigDecimal amount;
@@ -61,10 +61,21 @@ public class Subscription extends BaseEntity {
     }
 
     public enum SubscriptionStatus {
-        ACTIVE,
-        CANCELED,
-        PAST_DUE,
-        UNPAID,
-        TRIAL
+        PENDING("PENDING"),
+        ACTIVE("ACTIVE"),
+        CANCELED("CANCELED"),
+        PAST_DUE("PAST_DUE"),
+        UNPAID("UNPAID"),
+        TRIAL("TRIAL");
+
+        private final String value;
+
+        SubscriptionStatus(String value) {
+            this.value = value;
+        }
+
+        public String getValue() {
+            return value;
+        }
     }
 } 
