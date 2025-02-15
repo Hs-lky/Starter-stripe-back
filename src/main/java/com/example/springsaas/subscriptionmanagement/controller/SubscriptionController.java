@@ -20,26 +20,6 @@ public class SubscriptionController {
 
     private final SubscriptionService subscriptionService;
 
-    @PostMapping
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<SubscriptionResponse> createSubscription(
-            @Valid @RequestBody SubscriptionRequest request) throws StripeException {
-        return ResponseEntity.ok(subscriptionService.createSubscription(request));
-    }
-
-    @PostMapping("/{id}/cancel")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<SubscriptionResponse> cancelSubscription(
-            @PathVariable Long id) throws StripeException {
-        return ResponseEntity.ok(subscriptionService.cancelSubscription(id));
-    }
-
-    @PostMapping("/setup-intent")
-    @PreAuthorize("isAuthenticated()")
-    public ResponseEntity<Map<String, String>> createSetupIntent() throws StripeException {
-        return ResponseEntity.ok(subscriptionService.createSetupIntent());
-    }
-
     @PostMapping("/create-checkout-session")
     @PreAuthorize("isAuthenticated()")
     public ResponseEntity<Map<String, String>> createCheckoutSession(
@@ -52,4 +32,4 @@ public class SubscriptionController {
     public ResponseEntity<List<SubscriptionResponse>> getUserSubscriptions() {
         return ResponseEntity.ok(subscriptionService.getUserSubscriptions());
     }
-} 
+}
