@@ -5,6 +5,7 @@ import com.example.springsaas.authentication.dto.LoginRequest;
 import com.example.springsaas.authentication.dto.RegisterRequest;
 import com.example.springsaas.authentication.entity.User;
 import com.example.springsaas.authentication.repository.UserRepository;
+import com.example.springsaas.email.service.EmailService;
 import com.example.springsaas.security.JwtService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -12,6 +13,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -24,6 +26,10 @@ public class AuthenticationService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
+    private final EmailService emailService;
+
+    @Value("${app.frontend-url}")
+    private String frontendUrl;
 
     @Transactional
     public AuthResponse register(RegisterRequest request) {
@@ -38,10 +44,18 @@ public class AuthenticationService {
                 passwordEncoder.encode(request.getPassword())
         );
 
-        user.setVerificationToken(UUID.randomUUID().toString());
-        user.setVerificationTokenExpiry(LocalDateTime.now().plusDays(1));
+        // Generate verification token with 24-hour expiry
+        String verificationToken = UUID.randomUUID().toString();
+        user.setVerificationToken(verificationToken);
+        user.setVerificationTokenExpiry(LocalDateTime.now().plusHours(24));
+        user.setEnabled(false); // User starts as disabled until email is verified
         
         var savedUser = userRepository.save(user);
+
+        // Send verification email
+        String verificationLink = frontendUrl + "/verify-email?token=" + verificationToken;
+        emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), verificationLink);
+        
         var jwtToken = jwtService.generateToken(user);
         
         return AuthResponse.builder()
@@ -88,13 +102,46 @@ public class AuthenticationService {
                 .orElseThrow(() -> new RuntimeException("Invalid verification token"));
 
         if (user.getVerificationTokenExpiry().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Verification token has expired");
+            // Generate new token if expired
+            String newToken = UUID.randomUUID().toString();
+            user.setVerificationToken(newToken);
+            user.setVerificationTokenExpiry(LocalDateTime.now().plusHours(24));
+            userRepository.save(user);
+            
+            // Send new verification email
+            String newVerificationLink = frontendUrl + "/verify-email?token=" + newToken;
+            emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), newVerificationLink);
+            
+            throw new RuntimeException("Verification token has expired. A new verification email has been sent.");
         }
 
         user.setEnabled(true);
         user.setVerificationToken(null);
         user.setVerificationTokenExpiry(null);
         userRepository.save(user);
+
+        // Send welcome email after successful verification
+        emailService.sendWelcomeEmail(user.getEmail(), user.getFirstName());
+    }
+
+    @Transactional
+    public void resendVerificationEmail(String email) {
+        var user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        if (user.isEnabled()) {
+            throw new RuntimeException("Email is already verified");
+        }
+
+        // Generate new verification token
+        String newToken = UUID.randomUUID().toString();
+        user.setVerificationToken(newToken);
+        user.setVerificationTokenExpiry(LocalDateTime.now().plusHours(24));
+        userRepository.save(user);
+
+        // Send new verification email
+        String verificationLink = frontendUrl + "/verify-email?token=" + newToken;
+        emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), verificationLink);
     }
 
     @Transactional
