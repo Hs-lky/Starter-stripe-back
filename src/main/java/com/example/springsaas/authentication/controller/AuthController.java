@@ -26,23 +26,45 @@ public class AuthController {
         return ResponseEntity.ok(authService.login(request));
     }
 
-    @GetMapping("/verify")
-    public ResponseEntity<Void> verifyEmail(@RequestParam String token) {
-        authService.verifyEmail(token);
-        return ResponseEntity.ok().build();
+    @GetMapping("/verify-email")
+    public ResponseEntity<String> verifyEmail(@RequestParam String token) {
+        try {
+            authService.verifyEmail(token);
+            return ResponseEntity.ok("Email verified successfully. You can now log in.");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+    }
+
+    @PostMapping("/resend-verification")
+    public ResponseEntity<String> resendVerificationEmail(@RequestParam String email) {
+        try {
+            authService.resendVerificationEmail(email);
+            return ResponseEntity.ok("Verification email has been resent.");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 
     @PostMapping("/forgot-password")
-    public ResponseEntity<Void> forgotPassword(@RequestParam String email) {
-        authService.forgotPassword(email);
-        return ResponseEntity.ok().build();
+    public ResponseEntity<String> forgotPassword(@RequestParam String email) {
+        try {
+            authService.forgotPassword(email);
+            return ResponseEntity.ok("Password reset instructions have been sent to your email.");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 
     @PostMapping("/reset-password")
-    public ResponseEntity<Void> resetPassword(
+    public ResponseEntity<String> resetPassword(
             @RequestParam String token,
             @RequestParam String newPassword) {
-        authService.resetPassword(token, newPassword);
-        return ResponseEntity.ok().build();
+        try {
+            authService.resetPassword(token, newPassword);
+            return ResponseEntity.ok("Password has been reset successfully.");
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 } 
