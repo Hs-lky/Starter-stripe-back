@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.*;
 
 @Slf4j
 @RestController
-@RequestMapping("/api/webhook")
+@RequestMapping("/webhook")
 @RequiredArgsConstructor
 public class WebhookController {
 
@@ -27,32 +27,73 @@ public class WebhookController {
     public ResponseEntity<String> handleStripeWebhook(@RequestBody String payload, @RequestHeader("Stripe-Signature") String sigHeader) {
         try {
             Event event = Webhook.constructEvent(payload, sigHeader, webhookSecret);
+            log.info("Processing Stripe webhook event: {} [{}]", event.getType(), event.getId());
+            
             EventDataObjectDeserializer dataObjectDeserializer = event.getDataObjectDeserializer();
-            StripeObject stripeObject = null;
-            if (dataObjectDeserializer.getObject().isPresent()) {
-                stripeObject = dataObjectDeserializer.getObject().get();
+            if (!dataObjectDeserializer.getObject().isPresent()) {
+                log.error("Cannot deserialize webhook event data for event: {} [{}]", event.getType(), event.getId());
+                return ResponseEntity.badRequest().body("Cannot deserialize webhook event data");
             }
+            
+            StripeObject stripeObject = dataObjectDeserializer.getObject().get();
+            log.debug("Deserialized stripe object class: {}", stripeObject.getClass().getName());
 
-            switch (event.getType()) {
-                case "checkout.session.completed":
-                    Session session = (Session) stripeObject;
-                    subscriptionService.handleCheckoutSessionCompleted(session);
-                    break;
-                case "customer.subscription.updated":
-                    com.stripe.model.Subscription subscription = (com.stripe.model.Subscription) stripeObject;
-                    subscriptionService.handleSubscriptionUpdated(subscription);
-                    break;
-                case "customer.subscription.deleted":
-                    subscription = (com.stripe.model.Subscription) stripeObject;
-                    subscriptionService.handleSubscriptionCanceled(subscription);
-                    break;
-                default:
-                    log.info("Unhandled event type: {}", event.getType());
+            try {
+                switch (event.getType()) {
+                    case "checkout.session.completed":
+                        if (stripeObject instanceof Session) {
+                            Session session = (Session) stripeObject;
+                            log.info("Processing checkout session completed: {} for customer: {}", 
+                                    session.getId(), session.getCustomer());
+                            subscriptionService.handleCheckoutSessionCompleted(session);
+                        } else {
+                            log.error("Expected Session object but got: {}", stripeObject.getClass().getName());
+                        }
+                        break;
+                        
+                    case "customer.subscription.created":
+                    case "customer.subscription.updated":
+                        if (stripeObject instanceof com.stripe.model.Subscription) {
+                            com.stripe.model.Subscription subscription = (com.stripe.model.Subscription) stripeObject;
+                            log.info("Processing subscription update: {} for customer: {}", 
+                                    subscription.getId(), subscription.getCustomer());
+                            subscriptionService.handleSubscriptionUpdated(subscription);
+                        } else {
+                            log.error("Expected Subscription object but got: {}", stripeObject.getClass().getName());
+                        }
+                        break;
+                        
+                    case "customer.subscription.deleted":
+                        if (stripeObject instanceof com.stripe.model.Subscription) {
+                            com.stripe.model.Subscription subscription = (com.stripe.model.Subscription) stripeObject;
+                            log.info("Processing subscription deletion: {} for customer: {}", 
+                                    subscription.getId(), subscription.getCustomer());
+                            subscriptionService.handleSubscriptionCanceled(subscription);
+                        } else {
+                            log.error("Expected Subscription object but got: {}", stripeObject.getClass().getName());
+                        }
+                        break;
+                        
+                    case "invoice.payment_succeeded":
+                    case "invoice.paid":
+                        log.info("Payment successful for invoice: {} [{}]", event.getId(), stripeObject.getClass().getName());
+                        break;
+                        
+                    case "invoice.payment_failed":
+                        log.warn("Payment failed for invoice: {} [{}]", event.getId(), stripeObject.getClass().getName());
+                        break;
+                        
+                    default:
+                        log.info("Unhandled event type: {} [{}]", event.getType(), event.getId());
+                }
+
+                return ResponseEntity.ok().body("Webhook processed successfully");
+            } catch (Exception e) {
+                log.error("Error processing webhook event: {} [{}]: {}", event.getType(), event.getId(), e.getMessage(), e);
+                return ResponseEntity.badRequest().body("Error processing webhook: " + e.getMessage());
             }
-
-            return ResponseEntity.ok().body("Webhook processed successfully");
         } catch (Exception e) {
-            log.error("Error processing webhook", e);
+            log.error("Error constructing webhook event: {}", e.getMessage(), e);
             return ResponseEntity.badRequest().body("Webhook error: " + e.getMessage());
         }
     }
