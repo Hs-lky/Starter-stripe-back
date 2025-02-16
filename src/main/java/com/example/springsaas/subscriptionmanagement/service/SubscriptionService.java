@@ -183,16 +183,26 @@ public class SubscriptionService {
 
     @Transactional
     public void handleCheckoutSessionCompleted(com.stripe.model.checkout.Session session) {
+        log.info("Handling checkout session completed: {}", session.getId());
         String stripeCustomerId = session.getCustomer();
         String stripeSubscriptionId = session.getSubscription();
         
+        log.debug("Looking up user for stripeCustomerId: {}", stripeCustomerId);
         User user = userRepository.findByStripeCustomerId(stripeCustomerId)
-                .orElseThrow(() -> new RuntimeException("User not found for customer: " + stripeCustomerId));
+                .orElseThrow(() -> {
+                    log.error("User not found for customer: {}", stripeCustomerId);
+                    return new RuntimeException("User not found for customer: " + stripeCustomerId);
+                });
         
+        log.debug("Looking up pending subscription for user: {}", user.getEmail());
         Subscription subscription = subscriptionRepository.findByUserAndStatus(user, SubscriptionStatus.PENDING)
-                .orElseThrow(() -> new RuntimeException("No pending subscription found for user: " + user.getEmail()));
+                .orElseThrow(() -> {
+                    log.error("No pending subscription found for user: {}", user.getEmail());
+                    return new RuntimeException("No pending subscription found for user: " + user.getEmail());
+                });
         
         try {
+            log.debug("Retrieving Stripe subscription: {}", stripeSubscriptionId);
             com.stripe.model.Subscription stripeSubscription = com.stripe.model.Subscription.retrieve(stripeSubscriptionId);
             
             subscription.setStatus(SubscriptionStatus.ACTIVE);
@@ -204,25 +214,30 @@ public class SubscriptionService {
                     Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodEnd()), 
                     ZoneId.systemDefault()));
             
-            subscriptionRepository.save(subscription);
+            Subscription savedSubscription = subscriptionRepository.save(subscription);
+            log.info("Subscription activated: {} for user: {}", savedSubscription.getId(), user.getEmail());
             
             // Create audit record for successful subscription
             createAuditRecord(user, subscription.getPlan(), session.getId(), "SUBSCRIPTION_ACTIVATED", null);
             
-            log.info("Subscription activated for user: {} with stripeSubscriptionId: {}", 
-                    user.getEmail(), stripeSubscriptionId);
         } catch (StripeException e) {
-            log.error("Error retrieving Stripe subscription", e);
-            createAuditRecord(user, subscription.getPlan(), session.getId(), "ACTIVATION_FAILED", e.getMessage());
+            String errorMessage = "Error retrieving Stripe subscription: " + e.getMessage();
+            log.error(errorMessage, e);
+            createAuditRecord(user, subscription.getPlan(), session.getId(), "ACTIVATION_FAILED", errorMessage);
             throw new RuntimeException("Error activating subscription", e);
         }
     }
 
     @Transactional
     public void handleSubscriptionUpdated(com.stripe.model.Subscription stripeSubscription) {
+        log.info("Handling subscription update: {}", stripeSubscription.getId());
+        
         Subscription subscription = subscriptionRepository
                 .findByStripeSubscriptionId(stripeSubscription.getId())
-                .orElseThrow(() -> new RuntimeException("Subscription not found: " + stripeSubscription.getId()));
+                .orElseThrow(() -> {
+                    log.error("Subscription not found: {}", stripeSubscription.getId());
+                    return new RuntimeException("Subscription not found: " + stripeSubscription.getId());
+                });
         
         subscription.setCurrentPeriodStart(LocalDateTime.ofInstant(
                 Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodStart()), 
@@ -231,14 +246,19 @@ public class SubscriptionService {
                 Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodEnd()), 
                 ZoneId.systemDefault()));
         
-        if ("past_due".equals(stripeSubscription.getStatus())) {
+        String stripeStatus = stripeSubscription.getStatus();
+        log.debug("Stripe subscription status: {}", stripeStatus);
+        
+        if ("past_due".equals(stripeStatus)) {
             subscription.setStatus(SubscriptionStatus.PAST_DUE);
-        } else if ("unpaid".equals(stripeSubscription.getStatus())) {
+        } else if ("unpaid".equals(stripeStatus)) {
             subscription.setStatus(SubscriptionStatus.UNPAID);
+        } else if ("active".equals(stripeStatus)) {
+            subscription.setStatus(SubscriptionStatus.ACTIVE);
         }
         
-        subscriptionRepository.save(subscription);
-        log.info("Subscription updated: {}", subscription.getId());
+        Subscription savedSubscription = subscriptionRepository.save(subscription);
+        log.info("Subscription updated: {} with status: {}", savedSubscription.getId(), savedSubscription.getStatus());
     }
 
     @Transactional
