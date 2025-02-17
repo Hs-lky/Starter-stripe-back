@@ -53,7 +53,7 @@ public class AuthenticationService {
         var savedUser = userRepository.save(user);
 
         // Send verification email
-        String verificationLink = frontendUrl + "/verify-email?token=" + verificationToken;
+        String verificationLink = frontendUrl + "/auth/auth/verify-email?token=" + verificationToken;
         emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), verificationLink);
         
         var jwtToken = jwtService.generateToken(user);
