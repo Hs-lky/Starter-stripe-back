@@ -293,4 +293,46 @@ public class SubscriptionService {
         subscriptionRepository.save(subscription);
         log.info("Subscription canceled: {}", subscription.getId());
     }
+
+    @Transactional
+    public void activateSubscription(String sessionId) throws StripeException {
+        log.info("Activating subscription for session: {}", sessionId);
+        
+        // Retrieve the session from Stripe
+        com.stripe.model.checkout.Session session = com.stripe.model.checkout.Session.retrieve(sessionId);
+        
+        if (!"complete".equals(session.getStatus())) {
+            throw new RuntimeException("Checkout session is not complete");
+        }
+        
+        String stripeCustomerId = session.getCustomer();
+        String stripeSubscriptionId = session.getSubscription();
+        
+        // Find the user
+        User user = userRepository.findByStripeCustomerId(stripeCustomerId)
+                .orElseThrow(() -> new RuntimeException("User not found for customer: " + stripeCustomerId));
+        
+        // Find pending subscription
+        Subscription subscription = subscriptionRepository.findByUserAndStatus(user, SubscriptionStatus.PENDING)
+                .orElseThrow(() -> new RuntimeException("No pending subscription found for user: " + user.getEmail()));
+        
+        // Retrieve subscription details from Stripe
+        com.stripe.model.Subscription stripeSubscription = com.stripe.model.Subscription.retrieve(stripeSubscriptionId);
+        
+        // Update subscription status
+        subscription.setStatus(SubscriptionStatus.ACTIVE);
+        subscription.setStripeSubscriptionId(stripeSubscriptionId);
+        subscription.setCurrentPeriodStart(LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodStart()), 
+                ZoneId.systemDefault()));
+        subscription.setCurrentPeriodEnd(LocalDateTime.ofInstant(
+                Instant.ofEpochSecond(stripeSubscription.getCurrentPeriodEnd()), 
+                ZoneId.systemDefault()));
+        
+        subscriptionRepository.save(subscription);
+        log.info("Subscription activated: {} for user: {}", subscription.getId(), user.getEmail());
+        
+        // Create audit record
+        createAuditRecord(user, subscription.getPlan(), sessionId, "SUBSCRIPTION_ACTIVATED", null);
+    }
 } 
