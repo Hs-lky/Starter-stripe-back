@@ -23,8 +23,8 @@ spring:
   mail:
     host: mail.i-team.ma
     port: 587
-    username: report@i-team.ma
-    password: Shz@NseKzJW}
+    username: 
+    password: 
     default-encoding: UTF-8
     properties:
       mail:
@@ -33,7 +33,7 @@ spring:
           starttls:
             enable: true
           ssl:
-            trust: mail.i-team.ma
+            trust: 
           timeout: 30000
           connectiontimeout: 30000
           writetimeout: 30000
