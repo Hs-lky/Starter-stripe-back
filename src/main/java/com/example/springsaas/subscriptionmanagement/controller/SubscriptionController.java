@@ -32,4 +32,16 @@ public class SubscriptionController {
     public ResponseEntity<List<SubscriptionResponse>> getUserSubscriptions() {
         return ResponseEntity.ok(subscriptionService.getUserSubscriptions());
     }
+
+    @GetMapping("/user/{userId}")
+    @PreAuthorize("hasRole('ADMIN') or @userSecurity.isCurrentUser(#userId)")
+    public ResponseEntity<List<SubscriptionResponse>> getUserSubscriptionsByUserId(@PathVariable Long userId) {
+        return ResponseEntity.ok(subscriptionService.getUserSubscriptionsByUserId(userId));
+    }
+
+    @GetMapping("/active/user/{userId}")
+    @PreAuthorize("hasRole('ADMIN') or @userSecurity.isCurrentUser(#userId)")
+    public ResponseEntity<SubscriptionResponse> getUserActiveSubscription(@PathVariable Long userId) {
+        return ResponseEntity.ok(subscriptionService.getUserActiveSubscription(userId));
+    }
 }
