@@ -21,12 +21,33 @@ spring:
   
   # Mail Configuration
   mail:
+    host: mail.i-team.ma
+    port: 587
+    username: report@i-team.ma
+    password: Shz@NseKzJW}
+    default-encoding: UTF-8
     properties:
       mail:
         smtp:
           auth: true
           starttls:
             enable: true
+          ssl:
+            trust: mail.i-team.ma
+          timeout: 30000
+          connectiontimeout: 30000
+          writetimeout: 30000
+        transport:
+          protocol: smtp
+        debug: true
+
+# Application Configuration
+app:
+  name: "SaaS Platform"
+  frontend-url: "http://localhost:4200"
+  email:
+    from-name: "SaaS Platform"
+    support-email: "report@i-team.ma"
 
 # CORS Configuration
 cors:
@@ -41,4 +62,6 @@ logging:
     root: INFO
     com.example.springsaas: DEBUG
     org.springframework.security: INFO
-    org.springframework.web: INFO 
+    org.springframework.web: INFO
+    org.springframework.mail: DEBUG
+    org.thymeleaf: DEBUG 
