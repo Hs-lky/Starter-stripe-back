@@ -123,6 +123,25 @@ public class SubscriptionService {
                 .collect(Collectors.toList());
     }
 
+    public List<SubscriptionResponse> getUserSubscriptionsByUserId(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+                
+        return subscriptionRepository.findAllByUser(user)
+                .stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+    }
+
+    public SubscriptionResponse getUserActiveSubscription(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+                
+        return subscriptionRepository.findByUserAndStatus(user, SubscriptionStatus.ACTIVE)
+                .map(this::mapToResponse)
+                .orElse(null);
+    }
+
     private void validateSubscriptionRequest(User user, SubscriptionRequest request) {
         if (!PLAN_PRICE_IDS.containsKey(request.getPlan())) {
             log.error("Invalid subscription plan requested: {}", request.getPlan());
