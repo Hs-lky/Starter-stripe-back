@@ -44,4 +44,16 @@ public class SubscriptionController {
     public ResponseEntity<SubscriptionResponse> getUserActiveSubscription(@PathVariable Long userId) {
         return ResponseEntity.ok(subscriptionService.getUserActiveSubscription(userId));
     }
+
+    @PostMapping("/activate")
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<Void> activateSubscription(@RequestParam String sessionId) {
+        try {
+            subscriptionService.activateSubscription(sessionId);
+            return ResponseEntity.ok().build();
+        } catch (Exception e) {
+         //   log.error("Failed to activate subscription", e);
+            return ResponseEntity.badRequest().build();
+        }
+    }
 }
