@@ -335,4 +335,32 @@ public class SubscriptionService {
         // Create audit record
         createAuditRecord(user, subscription.getPlan(), sessionId, "SUBSCRIPTION_ACTIVATED", null);
     }
+
+    @Transactional
+    public Map<String, String> createCustomerPortalSession() throws StripeException {
+        User user = (User) SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        log.info("Creating customer portal session for user: {}", user.getEmail());
+
+        try {
+            // Ensure user has a Stripe customer ID
+            String stripeCustomerId = getOrCreateStripeCustomer(user);
+
+            Map<String, Object> params = new HashMap<>();
+            params.put("customer", stripeCustomerId);
+            params.put("return_url", "http://localhost:4200/dashboard/subscriptions");
+
+            com.stripe.model.billingportal.Session portalSession = 
+                com.stripe.model.billingportal.Session.create(params);
+
+            log.info("Customer portal session created successfully for user: {}", user.getEmail());
+
+            return Map.of(
+                "portalUrl", portalSession.getUrl()
+            );
+
+        } catch (Exception e) {
+            log.error("Failed to create customer portal session for user: {}", user.getEmail(), e);
+            throw e;
+        }
+    }
 } 
