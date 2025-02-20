@@ -56,4 +56,10 @@ public class SubscriptionController {
             return ResponseEntity.badRequest().build();
         }
     }
+
+    @PostMapping("/create-portal-session")
+    public ResponseEntity<Map<String, String>> createPortalSession() throws StripeException {
+        Map<String, String> portalSession = subscriptionService.createCustomerPortalSession();
+        return ResponseEntity.ok(portalSession);
+    }
 }
