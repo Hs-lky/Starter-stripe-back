@@ -13,6 +13,7 @@ import com.stripe.Stripe;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Customer;
 import com.stripe.model.Price;
+import com.stripe.model.SubscriptionItem;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +30,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
+import com.stripe.param.SubscriptionUpdateParams;
+
 
 @Slf4j
 @Service
@@ -44,8 +47,8 @@ public class SubscriptionService {
 
     private final Map<Subscription.SubscriptionPlan, String> PLAN_PRICE_IDS = Map.of(
             Subscription.SubscriptionPlan.BASIC, "price_1QsqFcPTJe3xQo0CAz3WS0Eo",
-            Subscription.SubscriptionPlan.PREMIUM, "price_premium_monthly",
-            Subscription.SubscriptionPlan.ENTERPRISE, "price_enterprise_monthly"
+            Subscription.SubscriptionPlan.PREMIUM, "price_1Quu9MPTJe3xQo0Cxapa2qOI",
+            Subscription.SubscriptionPlan.ENTERPRISE, "price_1QuuATPTJe3xQo0CFEaFfGKF"
     );
 
     @PostConstruct
@@ -363,4 +366,57 @@ public class SubscriptionService {
             throw e;
         }
     }
+
+    @Transactional
+    public void changeSubscriptionPlan(Long userId, Subscription.SubscriptionPlan newPlan) throws StripeException {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        Subscription subscription = subscriptionRepository.findByUserAndStatus(user, SubscriptionStatus.ACTIVE)
+                .orElseThrow(() -> new RuntimeException("No active subscription found for user: " + user.getEmail()));
+
+        String stripeSubscriptionId = subscription.getStripeSubscriptionId();
+        if (stripeSubscriptionId == null) {
+            throw new RuntimeException("No Stripe subscription ID found for user: " + user.getEmail());
+        }
+
+        String newPriceId = PLAN_PRICE_IDS.get(newPlan);
+        if (newPriceId == null) {
+            throw new IllegalArgumentException("Invalid subscription plan: " + newPlan);
+        }
+
+        // Retrieve the existing subscription from Stripe
+        com.stripe.model.Subscription stripeSubscription = com.stripe.model.Subscription.retrieve(stripeSubscriptionId);
+
+        // Find the existing subscription item
+        SubscriptionItem existingItem = stripeSubscription.getItems().getData().stream()
+                .filter(item -> item.getPrice().getId().equals(newPriceId))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("No subscription item found with the specified price"));
+
+        // Update the existing subscription item with the new price
+        SubscriptionUpdateParams updateParams = SubscriptionUpdateParams.builder()
+                .addItem(SubscriptionUpdateParams.Item.builder()
+                        .setId(existingItem.getId())
+                        .setPrice(newPriceId)
+                        .build())
+                .build();
+
+        stripeSubscription.update(updateParams);
+
+        com.stripe.model.Price newPrice = com.stripe.model.Price.retrieve(newPriceId);
+
+        // Update the local subscription record
+        subscription.setPlan(newPlan);
+        subscription.setAmount(BigDecimal.valueOf(newPrice.getUnitAmount() / 100.0));
+        subscription.setCurrency(newPrice.getCurrency().toUpperCase());
+        subscriptionRepository.save(subscription);
+
+        log.info("Subscription plan changed to {} for user: {}", newPlan, user.getEmail());
+
+        // Create audit record for the plan change
+        createAuditRecord(user, newPlan, stripeSubscriptionId, "PLAN_CHANGED", null);
+    }
+
+    
 } 
