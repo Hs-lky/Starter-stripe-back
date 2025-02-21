@@ -2,6 +2,7 @@ package com.example.springsaas.subscriptionmanagement.controller;
 
 import com.example.springsaas.subscriptionmanagement.dto.SubscriptionRequest;
 import com.example.springsaas.subscriptionmanagement.dto.SubscriptionResponse;
+import com.example.springsaas.subscriptionmanagement.entity.Subscription.SubscriptionPlan;
 import com.example.springsaas.subscriptionmanagement.service.SubscriptionService;
 import com.stripe.exception.StripeException;
 import jakarta.validation.Valid;
@@ -61,5 +62,19 @@ public class SubscriptionController {
     public ResponseEntity<Map<String, String>> createPortalSession() throws StripeException {
         Map<String, String> portalSession = subscriptionService.createCustomerPortalSession();
         return ResponseEntity.ok(portalSession);
+    }
+
+    @PostMapping("/change-plan")
+    public ResponseEntity<String> changeSubscriptionPlan(
+            @RequestParam Long userId,
+            @RequestParam SubscriptionPlan newPlan) {
+        try {
+            subscriptionService.changeSubscriptionPlan(userId, newPlan);
+            return ResponseEntity.ok("Subscription plan changed successfully.");
+        } catch (StripeException e) {
+            return ResponseEntity.status(500).body("Failed to change subscription plan: " + e.getMessage());
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
     }
 }
