@@ -127,7 +127,13 @@ public class EmailService {
     public void sendPasswordResetEmail(String to, String resetLink) {
         Context context = new Context();
         context.setVariable("resetLink", resetLink);
-        sendEmail(to, "Password Reset Request", "password-reset", context, null);
+        Map<String, Resource> inlineResources = new HashMap<>();
+        try {
+            inlineResources.put("logo", resourceLoader.getResource("classpath:static/images/logo.png"));
+        } catch (Exception e) {
+            log.warn("Could not load logo image for password reset email", e);
+        }
+        sendEmail(to, "Password Reset Request", "email/password-reset", context, inlineResources);
     }
 
     public void sendSubscriptionConfirmationEmail(String to, String name, String plan) {
