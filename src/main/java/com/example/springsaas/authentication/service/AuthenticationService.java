@@ -4,6 +4,7 @@ import com.example.springsaas.authentication.dto.AuthResponse;
 import com.example.springsaas.authentication.dto.LoginRequest;
 import com.example.springsaas.authentication.dto.RegisterRequest;
 import com.example.springsaas.authentication.entity.User;
+import com.example.springsaas.authentication.exception.AuthenticationException;
 import com.example.springsaas.authentication.repository.UserRepository;
 import com.example.springsaas.email.service.EmailService;
 import com.example.springsaas.security.JwtService;
@@ -34,7 +35,7 @@ public class AuthenticationService {
     @Transactional
     public AuthResponse register(RegisterRequest request) {
         if (userRepository.existsByEmail(request.getEmail())) {
-            throw new RuntimeException("Email already registered");
+            throw new AuthenticationException("Email already registered");
         }
 
         var user = new User(
@@ -78,7 +79,7 @@ public class AuthenticationService {
         );
 
         var user = userRepository.findByEmail(request.getEmail())
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new AuthenticationException("User not found"));
 
         user.setLastLoginDate(LocalDateTime.now());
         userRepository.save(user);
@@ -99,7 +100,7 @@ public class AuthenticationService {
     @Transactional
     public void verifyEmail(String token) {
         var user = userRepository.findByVerificationToken(token)
-                .orElseThrow(() -> new RuntimeException("Invalid verification token"));
+                .orElseThrow(() -> new AuthenticationException("Invalid verification token"));
 
         if (user.getVerificationTokenExpiry().isBefore(LocalDateTime.now())) {
             // Generate new token if expired
@@ -112,7 +113,7 @@ public class AuthenticationService {
             String newVerificationLink = frontendUrl + "/verify-email?token=" + newToken;
             emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), newVerificationLink);
             
-            throw new RuntimeException("Verification token has expired. A new verification email has been sent.");
+            throw new AuthenticationException("Verification token has expired. A new verification email has been sent.");
         }
 
         user.setEnabled(true);
@@ -127,10 +128,10 @@ public class AuthenticationService {
     @Transactional
     public void resendVerificationEmail(String email) {
         var user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new AuthenticationException("User not found"));
 
         if (user.isEnabled()) {
-            throw new RuntimeException("Email is already verified");
+            throw new AuthenticationException("Email is already verified");
         }
 
         // Generate new verification token
@@ -140,29 +141,32 @@ public class AuthenticationService {
         userRepository.save(user);
 
         // Send new verification email
-        String verificationLink = frontendUrl + "/verify-email?token=" + newToken;
+        String verificationLink = frontendUrl + "/auth/auth/verify-email?token=" + newToken;
         emailService.sendVerificationEmail(user.getEmail(), user.getFirstName(), verificationLink);
     }
 
     @Transactional
     public void forgotPassword(String email) {
         var user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+                .orElseThrow(() -> new AuthenticationException("User not found"));
 
-        user.setResetPasswordToken(UUID.randomUUID().toString());
+        String resetToken = UUID.randomUUID().toString();
+        user.setResetPasswordToken(resetToken);
         user.setResetPasswordTokenExpiry(LocalDateTime.now().plusHours(1));
         userRepository.save(user);
 
-        // TODO: Send password reset email
+        // Send password reset email
+        String resetLink = frontendUrl + "/auth/auth/reset-password?token=" + resetToken;
+        emailService.sendPasswordResetEmail(user.getEmail(), resetLink);
     }
 
     @Transactional
     public void resetPassword(String token, String newPassword) {
         var user = userRepository.findByResetPasswordToken(token)
-                .orElseThrow(() -> new RuntimeException("Invalid reset token"));
+                .orElseThrow(() -> new AuthenticationException("Invalid reset token"));
 
         if (user.getResetPasswordTokenExpiry().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Reset token has expired");
+            throw new AuthenticationException("Reset token has expired");
         }
 
         user.setPassword(passwordEncoder.encode(newPassword));
